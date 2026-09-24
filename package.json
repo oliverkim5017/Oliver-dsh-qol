@@ -29,11 +29,14 @@
     }
   },
   "scripts": {
+    "build": "pnpm run build:host && pnpm run build:client",
+    "build:client": "node scripts/build-client.mjs",
     "build:host": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "oxlint src tests scripts"
+    "lint": "oxlint src tests scripts",
+    "prepare": "pnpm run build"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-brand": "0.1.7-alpha.2",
