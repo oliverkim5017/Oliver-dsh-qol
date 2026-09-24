@@ -29,7 +29,7 @@
     }
   },
   "scripts": {
-    "build": "pnpm run build:host && pnpm run build:client",
+    "build": "node scripts/build.mjs",
     "build:client": "node scripts/build-client.mjs",
     "build:host": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
