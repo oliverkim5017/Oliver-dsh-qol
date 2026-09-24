@@ -26,7 +26,7 @@ export function registerSessionDeleteClient(services: ClientServices): void {
     readonly sessionId: string
     readonly displayTitle: string
   }): void => {
-    const snapshot = sessions?.list.getSnapshot()
+    const snapshot = sessions()?.list.getSnapshot()
     const request: SessionDeleteRequest = {
       ...target,
       descendantCount: snapshot === undefined
@@ -42,7 +42,7 @@ export function registerSessionDeleteClient(services: ClientServices): void {
     settleSessionDelete: () => { requestStore.set(null) },
     deleteSession: async (sessionId) => {
       await requestSessionDelete((input, init) => fetch(input, init), sessionId)
-      await sessions?.refresh()
+      await sessions()?.refresh()
     },
   })
 

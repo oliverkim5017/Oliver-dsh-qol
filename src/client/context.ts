@@ -34,7 +34,12 @@ export interface ClientSessions {
 export interface ClientServices {
   readonly slots: ClientSlotRegistry
   readonly locale: ClientLocale
-  readonly sessions: ClientSessions | undefined
+  /**
+   * Client session list at call time. Read through a getter: provider fibers
+   * activate asynchronously, so a read during plugin activation can miss a
+   * service that appears later.
+   */
+  readonly sessions: () => ClientSessions | undefined
   /** Bind one registration to the plugin's client lifetime. */
   effect(callback: () => () => void, label: string): void
 }
@@ -52,11 +57,13 @@ export function clientServicesOf(ctx: { get(name: string): unknown }): ClientSer
   if (!isLocale(locale)) throw new Error('oliver-qol: the client locale service is unavailable')
   const effect: unknown = Reflect.get(ctx, 'effect')
   if (typeof effect !== 'function') throw new Error('oliver-qol: the client context has no effect()')
-  const sessions = ctx.get('sessions')
   return {
     slots,
     locale,
-    sessions: isSessions(sessions) ? sessions : undefined,
+    sessions: () => {
+      const value = ctx.get('sessions')
+      return isSessions(value) ? value : undefined
+    },
     effect: (callback, label) => { Reflect.apply(effect, ctx, [callback, label]) },
   }
 }
