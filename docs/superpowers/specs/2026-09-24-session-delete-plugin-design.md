@@ -1,72 +1,102 @@
-# dsh-session-delete 插件设计
+# dsh-oliver-qol 插件设计（含首个功能 session-delete）
 
 - 日期：2026-09-24
 - 状态：已评审，待实施
 - 目标 dsh 版本：`0.1.7-alpha.2`（本地源码树 `F:\DeepSeekHarness`，`DSH_HOME=F:\DeepSeekHarness\home`）
-- 仓库：`D:\2Code\Oliver-dsh-qol`（私人 QoL 插件集合，pnpm monorepo）
+- 仓库：`D:\2Code\Oliver-dsh-qol`
 
 ## 1. 背景
 
 DeepSeek Harness（dsh）目前没有任何删除会话的能力：`SessionPersistence` seam 只有 `create/open/flush/stat/list`，唯一的"隐藏"机制是 archive 归档（可恢复、软隐藏）。上游把真正的删除（`SessionPersistence.delete`、级联、运行检查）明确列为 future work。
 
-本仓库用于长期开发个人 QoL 插件（本插件是第一个），因此既要真正补齐删除能力，也要把仓库结构、构建、测试做成后续插件可复用的范式，避免插件之间互相耦合。
+本仓库的产品形态是**一个插件** `dsh-oliver-qol`：把"个人需要但官方没提供的小功能"整合进同一个插件里（QoL = quality of life）。session-delete 是第一个功能，不是唯一功能。因此架构上必须做到：功能之间零耦合、增删功能只动功能自己的目录与入口清单、构建与测试按功能可独立验证。
 
 ## 2. 已确认的决策
 
 | 主题 | 决策 |
 |---|---|
+| 产品形态 | 单插件 `dsh-oliver-qol`，包内按功能模块组织；安装一次获得全部功能 |
 | 删除语义 | **永久删除**（不可恢复）。可逆隐藏继续由 dsh 自带 archive 承担 |
 | 功能入口 | **Web UI 会话菜单项**：悬停会话行的"..."菜单（现有 Pin/Rename/Fork/Archive）中新增 Delete session，点击后弹确认框 |
 | 活动会话 | **先停止再删除**：host 先停止该会话的 turn / jobs / subagent / 定时任务，再删除 |
 | 子会话 | **级联删除** `origin === 'subagent'` 的递归子会话；fork 出的会话保留（fork 无 `origin` 标记） |
-| 仓库结构 | **pnpm monorepo**，`plugins/*` 每个插件完全自包含、可独立以 `github:<user>/<repo>#path:plugins/session-delete` 安装 |
-| 分发 | GitHub 安装（`prepare` 构建）；本地开发用 `dsh plugin add link:<path>` |
+| 仓库结构 | **单包仓库**：仓库根目录就是 `dsh-oliver-qol` 包；pnpm 仅作包管理器 |
+| 分发 | GitHub 安装 `github:OliverKim/dsh-oliver-qol`（`prepare` 构建）；本地开发用 `dsh plugin add link:<path>` |
 | 简化项 | 不设 plan/dry-run 路由；确认框中的子会话数量由 client 用已加载的会话列表本地统计 |
+| 功能隔离 | 功能之间不互相 import；根入口持功能清单；每个功能自带 Config、locale namespace、路由前缀、测试 |
+| dsh 重启 | 实施期间不重启用户正在工作的 dsh；需要重启依赖的验收步骤推迟到用户放行后 |
 
 ## 3. 非目标
 
 - 不做回收站 / 撤销（undo）。
-- 不做给模型的 `session_delete` 工具（本轮不交付；未来可复用本服务）。
+- 不做给模型的 `session_delete` 工具（本轮不交付；未来可复用 host 服务）。
 - 不做批量删除、清理旧会话的自动策略。
 - 不改动 dsh 核心（`F:\DeepSeekHarness` 保持只读）。
 - 不做 headless / CLI 的删除入口（host 服务可供未来复用）。
+- 不搭"插件框架"：根入口只做功能清单遍历，不引入通用生命周期引擎。
 
 ## 4. 技术背景（来自 dsh 0.1.7-alpha.2 源码调研）
 
 - 会话日志：`<sessionsRoot>/<projectKey(cwd)>/<encodeSegment(id)>/session.v4.jsonl.zstd`（默认 zstd；`<sessionsRoot>` 默认 `dshHomePath('sessions')`；`_no-cwd` 表示无 cwd）。同目录存在写租约文件 `session.lock`（Windows 为内核信号量，无文件）。
-- 派生数据：投影缓存 domain `session_projcache` v7、`layout: 'per-record'`、表 `sessions`（key 为 SessionId），无删除 API，只能经 `storageDomain` 打开的表删除；可选 SQLite 全文索引会自行对账（无需处理）。
+- 派生数据：投影缓存 domain `session_projcache` v7、`layout: 'per-record'`、表 `sessions`（key 为 SessionId），无删除 API，只能经 `storageDomain` 已打开的表删除；可选 SQLite 全文索引会自行对账（无需处理）。
 - workspace 记账：`ctx.workspaceRegistry`（web 层才有）：`archiveSession(id, {stopActivity})`（会经 `workspace/session-stop` 停止 turn/jobs/subagent/schedule，并用归档集合阻止后续唤醒）、`unarchiveSession`、`unpinSession`、`archivedSessionIds`、`list()`；`Workspace.detachSession(id)` 可清理 `sessionIds` 数组中的记录。
 - 运行中判定：`ctx.sessions.get(id) !== undefined`（进程内 SessionStore）。
 - Web 扩展点：client slot `sidebar.workspaces.session.menu.item`（list 型，官方 archive 占 order 400）与 `shell.overlay`；`ctx.uiWorkspace` 为公开 client 服务；ui-workspace 的 `clearArchivedCurrent()` 会在当前会话被归档时清空选择并释放 retain，因此 host 侧"先归档→再等静默"可自然让当前打开的会话被释放。
 - 认证路由：`ctx.connection.fetch.register({ path, methods, requestBody, fetch })`（参考 `session-log-export`，路径 `/api/session.export`）。
-- client bundle：CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；平台模块表 = `react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-ui-dockkit`；client 会话摘要含 `parentSessionId`、`origin`。
-- 安装：`dsh plugin --profile web add github:<user>/<repo>#path:plugins/session-delete`（pnpm ≥9 支持 `path:` 子目录），git 依赖需 `prepare` 构建且 profile 的 `pnpm-workspace.yaml` 添加 `allowBuilds`。
+- client bundle：CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；平台模块表 = `react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-ui-dockkit`；client 会话摘要含 `parentSessionId`、`origin`；ui 原语含 `MenuItemButton`、`Modal`、`Button`、`IconTrashOutlineRegular`；`ctx.locale.register` 支持任意 namespace 字符串。
+- 安装：`dsh plugin --profile web add github:OliverKim/dsh-oliver-qol`，git 依赖需 `prepare` 构建且 profile 的 `pnpm-workspace.yaml` 添加 `allowBuilds`。
 
 ## 5. 架构
 
-### 5.1 包
+### 5.1 包与加载
 
-包名 `dsh-session-delete`，一个 npm 包内含 host 与 client 两半：
+一个 npm 包 `dsh-oliver-qol`，内含 host 与 client 两半：
 
 - `exports["."] → lib/index.js`（host）；`exports["./client"] → lib/client.js`（浏览器）。
 - `dsh.bundle.patch → cordis.patch.yml`；`dsh.client = { platform: 'web', inject: ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-workspace", "@deepseek-ai/dsh-api-session-controller"], immediately: false }`。
-- `cordis.patch.yml` 只插入一行：`{ id: session-delete, name: dsh-session-delete }`。
+- `cordis.patch.yml` 只插入一行：`{ id: oliver-qol, name: dsh-oliver-qol }`。
+- 命名空间约定：插件行 id `oliver-qol`；HTTP 路由前缀 `/api/oliver-qol/`；locale namespace 按功能分配（本功能 `oliver-qol.session-delete`）；host 能力键按功能分配（本功能 `sessionDelete`）。
 
-### 5.2 host 半
+**功能契约（最小约定，非框架）**：每个功能导出一个注册对象；根入口遍历功能清单逐个注册。功能自己负责从根配置取出子配置，避免异质清单的类型体操与 `unknown` 转换。
 
-插件形态为 function plugin（`name` / `inject` / `Config` / `apply`，无 default export）。
+```ts
+// src/features/index.ts — host 功能清单
+export const HOST_FEATURES = [sessionDeleteFeature] as const
 
-- `inject = ['sessionPersistence', 'sessions']`（核心服务；缺失即 fail loud）。
+// 每个功能形如：
+export interface HostFeature<C> {
+  /** 功能名，同时是根 Config 中的子配置键。 */
+  readonly name: string
+  /** 从根配置取出本功能的子配置（缺失时使用该功能自己的默认值）。 */
+  selectConfig(root: QolConfig): C
+  /** 自包含注册：内部完成 ctx.inject / 服务提供 / 路由注册 / effect 绑定。 */
+  register(ctx: Context, config: C): void
+}
+```
+
+```ts
+// src/client/index.ts — 浏览器插件入口
+export const inject = ['slots', 'locale']
+export function apply(ctx: Context): void {
+  for (const feature of CLIENT_FEATURES) feature.register(ctx)
+}
+```
+
+根 Config 聚合各功能子配置（`{ sessionDelete: {...} }`），每个功能自带 schema 与默认值。
+
+### 5.2 功能：session-delete（host 半）
+
+- 插件根 `apply` 不声明重依赖；`sessionDeleteFeature.register` 内部 `ctx.inject(['sessionPersistence', 'sessions'], ...)`（核心服务；缺失则该功能保持休眠，不拖垮其他功能与整包加载）。
 - 可选服务：`ctx.get('workspaceRegistry')`、`ctx.get('storageDomain')`、`ctx.get('connection')`。
-- `apply` 中 `ctx.provide('sessionDelete', service)`，并在 `connection` 存在时注册路由。
+- 激活后 `ctx.provide('sessionDelete', service)`，并在 `connection` 存在时注册路由。
 
 **Config（全部可配，无魔法数字）**
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `sessionsRoot` | `dshHomePath('sessions')` | JSONL 会话根目录 |
-| `quiescenceTimeoutMs` | `15000` | 等待会话静默的上限 |
-| `quiescencePollMs` | `200` | 静默轮询间隔 |
+| `sessionDelete.sessionsRoot` | `dshHomePath('sessions')` | JSONL 会话根目录 |
+| `sessionDelete.quiescenceTimeoutMs` | `15000` | 等待会话静默的上限 |
+| `sessionDelete.quiescencePollMs` | `200` | 静默轮询间隔 |
 
 **公开服务接口**
 
@@ -91,7 +121,7 @@ interface SessionDeleteService {
 
 **路由（已认证，仿 `session-log-export`）**
 
-- `POST /api/session.delete`，body `{ "sessionId": string }`，成功 `200 { "deleted": string[] }`，失败 `{ "code", "message", "deleted": string[] }`。
+- `POST /api/oliver-qol/session.delete`，body `{ "sessionId": string }`，成功 `200 { "deleted": string[] }`，失败 `{ "code", "message", "deleted": string[] }`。
 - 校验：body 必须为 JSON 且 `sessionId` 非空字符串，否则 400。
 - message 一律用户可读、不含宿主路径。
 
@@ -106,13 +136,13 @@ interface SessionDeleteService {
 
 **耦合隔离**：磁盘布局假设（两层目录 + `encodeSegment` 复刻）只存在于 `jsonl-layout.ts` 与 `removal.ts`；其余模块只依赖 dsh 公开服务。
 
-### 5.3 client 半
+### 5.3 功能：session-delete（client 半）
 
-`apply(ctx)` + `inject = ['slots', 'locale']`；`uiWorkspace` 与 `sessions` 作为可选 `ctx.get`。
+随包 client 入口注册；功能内部 `ctx.get('uiWorkspace')`、`ctx.get('sessions')` 作为可选依赖。
 
-- `ctx.effect(() => ctx.locale.register(NS, { zh, en }))`，全部文案在 `locales.ts`，无硬编码。
+- `ctx.effect(() => ctx.locale.register(NS, { zh, en }))`（`NS = 'oliver-qol.session-delete'`），全部文案在 `locales.ts`，无硬编码。
 - `ctx.slots.inject('sidebar.workspaces.session.menu.item', ...)` 注册 `{ id: 'delete', order: 500, locale: NS, inject }`（archive 为 400）→ `DeleteSessionMenuItem`。
-- `ctx.slots.inject('shell.overlay', ...)` 注册 `{ id: 'workspace.session-delete', locale: NS, inject }` → `SessionDeleteConfirmDialog`。
+- `ctx.slots.inject('shell.overlay', ...)` 注册 `{ id: 'oliver-qol.session-delete', locale: NS, inject }` → `SessionDeleteConfirmDialog`。
 
 **交互流**
 
@@ -122,50 +152,62 @@ interface SessionDeleteService {
 4. 成功 → 关闭对话框 → `ctx.get('sessions')?.refresh()`，侧边栏该行消失。
 5. 失败 → 对话框内联显示 `code: message`（本地化映射，未知码原样显示），可重试或取消；会话此时仅保持归档状态。
 
-**client 结构**：`src/client/index.ts`（注册）、`DeleteSessionMenuItem.tsx`、`SessionDeleteConfirmDialog.tsx`、`delete-client.ts`（fetch + 响应解析 + 纯函数可测）、`locales.ts`、`store.ts`（确认请求快照 store）。不使用 CSS Modules，只复用 `@deepseek-ai/dsh-client-ui-primitives` 的组件与图标（`MenuItemButton`、`Modal`、`Button`、`IconTrashOutlineRegular`）。
+**client 结构**：不使用 CSS Modules，只复用 `@deepseek-ai/dsh-client-ui-primitives` 的组件与图标。
 
 ## 6. 仓库结构
 
 ```
-D:\2Code\Oliver-dsh-qol\
-├─ package.json            # private 根；脚本转发到各插件（build/test/lint/typecheck）
-├─ pnpm-workspace.yaml     # packages: ['plugins/*']
+D:\2Code\Oliver-dsh-qol\            # 仓库根 == 包根（单包）
+├─ package.json                     # dsh-oliver-qol；dsh.bundle + dsh.client；peer/devDeps 锁 0.1.7-alpha.2
+├─ tsconfig.json                    # 自包含（不 extends 仓库外文件，保证 git 安装可构建）
+├─ cordis.patch.yml                 # insert 一行 id: oliver-qol
 ├─ .editorconfig
-├─ .gitignore              # node_modules、lib、*.tsbuildinfo 等
-├─ README.md               # 仓库目的、插件清单、开发流程
-├─ docs/superpowers/specs/ # 设计文档（本文件）
-└─ plugins/session-delete/
-   ├─ package.json         # dsh-session-delete；dsh.bundle + dsh.client；peer/devDeps 锁 0.1.7-alpha.2
-   ├─ cordis.patch.yml
-   ├─ tsconfig.json        # 自包含（不 extends 仓库外文件，保证 git 安装可构建）
-   ├─ scripts/build-client.mjs   # esbuild 打包 client → lib/client.js
-   ├─ src/
-   │  ├─ index.ts          # function plugin：name/inject/Config/apply
-   │  ├─ config.ts         # Config + Schema + 默认值
-   │  ├─ errors.ts         # SessionDeleteError + code 常量 + HTTP 映射
-   │  ├─ routes.ts         # 路由路径常量（注册用绝对路径 + client 相对路径）
-   │  ├─ plan.ts           # 目标与 subagent 子会话解析（纯函数）
-   │  ├─ stop.ts           # archive-with-stop + 静默等待
-   │  ├─ jsonl-layout.ts   # encodeSegment 复刻 + 会话目录定位（唯一格式耦合点）
-   │  ├─ removal.ts        # 目录删除 + 投影缓存记录删除
-   │  ├─ accounting.ts     # detachSession / unarchive / unpin
-   │  ├─ service.ts        # 流水线编排
-   │  ├─ route.ts          # connection.fetch.register 注册与请求/响应映射
-   │  └─ client/           # 见 5.3
-   ├─ tests/*.spec.ts      # vitest
-   └─ README.md            # 安装、开发循环、人工验收步骤、已知限制
+├─ .gitignore                       # node_modules、lib、*.tsbuildinfo 等
+├─ README.md                        # 插件用途、功能清单、安装、开发循环、验收步骤、已知限制
+├─ scripts/build-client.mjs         # esbuild 打包 client → lib/client.js
+├─ src/
+│  ├─ index.ts                      # host 入口：name/Config/apply，遍历 HOST_FEATURES
+│  ├─ config.ts                     # 根 Config：聚合各功能子配置
+│  ├─ features/
+│  │  ├─ index.ts                   # HOST_FEATURES 清单
+│  │  └─ session-delete/
+│  │     ├─ index.ts                # sessionDeleteFeature：register(ctx, config)
+│  │     ├─ config.ts               # Config + Schema + 默认值
+│  │     ├─ errors.ts               # code 常量 + SessionDeleteError + HTTP 映射
+│  │     ├─ routes.ts               # 路由路径常量（注册用绝对路径 + client 相对路径）
+│  │     ├─ plan.ts                 # 目标与 subagent 子会话解析（纯函数）
+│  │     ├─ stop.ts                 # archive-with-stop + 静默等待
+│  │     ├─ jsonl-layout.ts         # encodeSegment 复刻 + 会话目录定位（唯一格式耦合点）
+│  │     ├─ removal.ts              # 目录删除 + 投影缓存记录删除
+│  │     ├─ accounting.ts           # detachSession / unarchive / unpin
+│  │     ├─ service.ts              # 流水线编排
+│  │     ├─ route.ts                # connection.fetch.register 注册与请求/响应映射
+│  │     └─ client/
+│  │        ├─ index.ts             # registerSessionDeleteClient(ctx)
+│  │        ├─ store.ts             # 确认请求快照 store
+│  │        ├─ delete-client.ts     # fetch + 响应解析（纯函数可测）
+│  │        ├─ DeleteSessionMenuItem.tsx
+│  │        ├─ SessionDeleteConfirmDialog.tsx
+│  │        └─ locales.ts
+│  └─ client/
+│     └─ index.ts                   # 浏览器插件入口：inject + CLIENT_FEATURES 遍历
+├─ tests/
+│  └─ features/session-delete/*.spec.ts
+├─ docs/superpowers/specs/          # 设计文档（本文件）
+└─ lib/                             # 构建产物，不入库
 ```
 
-每个插件包完全自包含：自己的 tsconfig、构建脚本、依赖与测试；根目录只做编排。`lib/` 不入库。
+约定：新增功能 = 新建 `src/features/<name>/`（含 `client/`）+ 在 `src/features/index.ts` 与 `src/client/index.ts` 的清单各加一行；功能之间不互相 import；`src/shared/` 只在确有跨功能复用且被两个以上功能实际使用时才创建。
 
 ## 7. 工具链
 
-- pnpm workspace；Node `^22.19.0 || >=24.0.0`；ESM。
+- pnpm（单包，无 workspace 层）；Node `^22.19.0 || >=24.0.0`；ESM。
 - TypeScript strict；host 用 `tsc` 输出 `lib/index.js` + `lib/types`。
 - client 用 esbuild（devDependency）打包：`format: cjs`、`platform: browser`、`jsx: automatic`、externals = 用到的平台模块（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-store`）、banner/footer 包装成 `window.__ModuleLoader__.load`、输出 sourcemap。
-- 测试：vitest（插件包内）。
+- 测试：vitest。
 - 代码规范：`.editorconfig` + oxlint；文件末尾单换行；无注释复述代码。
-- peer/devDependencies：`@deepseek-ai/*` 与 `@deepseek-ai/cordis` 精确锁定 `0.1.7-alpha.2`；client 类型包（`dsh-client-ui-primitives`、`dsh-client-ui-slots`、`dsh-client-locale`、`dsh-client-store`、`dsh-api-session-controller` 等）作为 devDependency + optional peer，仅类型导入。
+- peer/devDependencies：`@deepseek-ai/*` 与 `@deepseek-ai/cordis` 精确锁定 `0.1.7-alpha.2`；client 类型包作为 devDependency + optional peer，仅类型导入。
+- `lib/` 不入库；`prepare: pnpm build` 供 git 安装构建（README 记录 profile 需加 `allowBuilds`）。
 
 ## 8. 测试策略
 
@@ -176,14 +218,17 @@ D:\2Code\Oliver-dsh-qol\
   - `stop`：静默等待成功/超时；`workspaceRegistry` 缺失时活动会话拒绝。
   - `route`：请求校验（缺 body、坏 JSON、空 sessionId）、成功/错误响应与 HTTP 状态映射（对注册到的 fetch 函数直接发 `Request`）。
   - `client/delete-client`：fake fetcher 的成功/错误/网络异常解析。
-- **人工集成验收（README 记录步骤）**：`link:` 安装到本地 profile → `dsh --profile web --dump-config` 确认行与层 → `dsh-web.cmd` → 创建含 subagent 子会话的测试会话 → 走 UI 删除 → 核对 `$DSH_HOME/sessions`、`storages/session_projcache`、workspace 记账均已清理；再验证"删除当前打开的会话"与"删除归档中的会话"。
+  - 根入口：`apply` 遍历清单注册全部功能（fake ctx 断言调用）。
+- **验证（不需要重启用户 dsh 的部分，先做）**：`pnpm build` 产物存在且可被 Node 导入；`dsh --profile web --dump-config` 使用临时 overlay/独立 profile 确认行合成（不触碰用户运行中的实例）。
+- **需重启的验收（推迟到用户放行）**：安装到本地 profile 后走 UI：删除普通会话、含 subagent 子会话的会话、当前打开的会话、归档中的会话；核对 `$DSH_HOME/sessions`、`storages/session_projcache`、workspace 记账均已清理。
 
 ## 9. 里程碑
 
-1. **M1 仓库骨架**：`git init`、根 workspace、README、本设计文档提交。
-2. **M2 host 半**：包骨架 + config/errors/routes/plan/stop/jsonl-layout/removal/accounting/service/route + 单元测试；link 安装后用 curl 验证路由（含错误路径）。
-3. **M3 client 半**：esbuild 构建 + 菜单项 + 确认框 + locale + 测试；Web UI 人工验收全部场景。
-4. **M4 收尾**：README（安装/开发/验收/限制）、根脚本、git 安装路径验证（可选，需远端仓库）。
+1. **M1 仓库骨架**：包骨架（package.json、tsconfig、cordis.patch.yml、.gitignore、.editorconfig、scripts/build-client.mjs、README 初稿）；`git init` 已完成。
+2. **M2 host 功能**：session-delete 全部 host 模块 + 单元测试；`pnpm build`/`pnpm test` 通过。
+3. **M3 client 功能**：client 入口 + 菜单项 + 确认框 + locale + delete-client + 测试；client bundle 构建通过。
+4. **M4 不重启验证**：产物导入检查、临时 overlay 的 `--dump-config` 检查、README 完善。
+5. **M5 重启验收（等用户放行）**：link 安装 + Web UI 全场景人工验收。
 
 ## 10. 已知限制与风险
 
@@ -192,10 +237,11 @@ D:\2Code\Oliver-dsh-qol\
 - **当前打开的会话**：依赖 ui-workspace 归档清空逻辑释放 retain；若客户端未及时释放，表现为 `busy` 超时，重试即可。
 - **删除不可恢复**：确认框已是最后一道防线；不提供 undelete。
 - **API 不稳定**：dsh 全部 API 处于 pre-stable，插件版本与 dsh 版本强绑定。
+- **单包共享风险**：任何功能的注册失败都不应影响其他功能（每个功能在自己的 `ctx.inject` fiber 内注册；错误只影响该功能）。
 
 ## 11. 未来工作
 
 - 回收站 / 延迟清理（trash + TTL）。
 - 模型工具 `session_delete`（复用 `sessionDelete` 服务 + 权限护栏）。
 - 批量清理（按时间/workspace）与"删除空白会话"。
-- 本仓库后续插件沿用同一包范式（host±client、自包含、独立安装）。
+- 后续 QoL 功能按本文件的功能契约加入本插件（同样单包多渠道：host±client、独立 Config/locale/路由前缀/测试）。
