@@ -152,7 +152,7 @@ interface SessionDeleteService {
 4. 成功 → 关闭对话框 → `ctx.get('sessions')?.refresh()`，侧边栏该行消失。
 5. 失败 → 对话框内联显示 `code: message`（本地化映射，未知码原样显示），可重试或取消；会话此时仅保持归档状态。
 
-**client 结构**：不使用 CSS Modules，只复用 `@deepseek-ai/dsh-client-ui-primitives` 的组件与图标。client 侧类型采用本地结构化接口（`ClientServices`：slots/locale/可选 sessions），不引入 ui-workspace 的整套 client 类型图，保持与宿主版本的松耦合；入口处对可选服务做运行时守卫。
+**client 结构**：不使用 CSS Modules，只复用 `@deepseek-ai/dsh-client-ui-primitives` 的组件与图标。client 侧类型采用本地结构化接口（`ClientServices`：slots/locale/可选 sessions），不引入 ui-workspace 的整套 client 类型图，保持与宿主版本的松耦合；入口处对可选服务做运行时守卫，且**可选服务一律在调用时读取**（提供方 fiber 可能晚于本插件激活）。
 
 ## 6. 仓库结构
 
