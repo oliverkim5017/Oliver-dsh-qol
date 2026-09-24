@@ -15,7 +15,7 @@ export type FakeConnectionState = 'ready' | 'pending' | 'absent'
 /** Facts the fake host context serves. */
 export interface FakeHostOptions {
   readonly snapshots: readonly SessionPersistenceSnapshot[]
-  readonly live?: ReadonlySet<SessionId>
+  /** Activity entries the fake activity waterfall reports per session. */
   readonly activity?: (sessionId: SessionId) => number
   readonly workspaceRegistry?: unknown
   readonly storageDomain?: unknown
@@ -30,7 +30,6 @@ export interface FakeHostContext {
   readonly routes: FakeRoute[]
   readonly logger: { warn(message: string): void }
   readonly sessionPersistence: { list(): Promise<readonly SessionPersistenceSnapshot[]> }
-  readonly sessions: { get(sessionId: SessionId): unknown }
   inject(names: readonly string[], callback: (ctx: FakeHostContext) => void): void
   get(name: string): unknown
   provide(name: string, value: unknown): void
@@ -53,7 +52,6 @@ export function createFakeHostContext(options: FakeHostOptions): FakeHostContext
   const warnings: string[] = []
   const provided = new Map<string, unknown>()
   const routes: FakeRoute[] = []
-  const live = options.live ?? new Set<SessionId>()
   const state: FakeConnectionState = options.connection ?? 'ready'
   const waiting: ((ctx: FakeHostContext) => void)[] = []
   let connectionActive = state === 'ready'
@@ -71,7 +69,6 @@ export function createFakeHostContext(options: FakeHostOptions): FakeHostContext
     routes,
     logger: { warn: message => { warnings.push(message) } },
     sessionPersistence: { list: async () => options.snapshots },
-    sessions: { get: sessionId => (live.has(sessionId) ? { id: sessionId } : undefined) },
     inject: (names, callback) => {
       if (names.includes('connection') && !connectionActive) {
         waiting.push(callback)

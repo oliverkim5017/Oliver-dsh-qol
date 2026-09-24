@@ -2783,3 +2783,9 @@ git commit -m "docs: document install, development, and acceptance for dsh-olive
 2. **Config 显式 resolve**：`SessionDeleteConfig` 改为全可选输入类型，新增 `ResolvedSessionDeleteConfig` 与 `resolveSessionDeleteConfig()`。原因：schemastery 的 schema 调用签名要求已解析值，且 dsh 约定"defaulting 是显式的 resolve 步骤"。
 3. **构建编排**：`pnpm build` 改为 `node scripts/build.mjs`（先清空 `lib/`，再 tsc host + esbuild client）；`tsconfig.build.json` 排除 `src/client/**/*` 与 `src/features/*/client/**/*`。原因：tsc 会因 host 文件被 client 文件间接引用而把 client 模块编译进 `lib/`，并可能把陈旧产物带进 npm 包。验证：`pnpm pack` 的 tarball 只含 host 产物、`lib/client.js`、`cordis.patch.yml`、README、package.json。
 4. **descendant-count 语义**：目标自身不计入子会话数（visited 集合预置 target，计数单独累加），环数据下不重复计数。
+
+### M5 联调发现的缺陷与修正（2026-09-24）
+
+5. **路由注册竞态**：`ctx.get(name, strict=true)` 只返回已 ACTIVE fiber 的服务。特性在 `sessionPersistence` 就绪即激活，而 connection 的 fiber 可能尚未 ACTIVE，于是路由被静默跳过（表现：`/api/oliver-qol/session.delete` 落到共享处理器兜底 404）。修正：路由注册改为 `featureCtx.inject(['connection'], ...)` 等待服务；`workspaceRegistry`/`storageDomain` 改为**调用时读取**（`() => ctx.get(...)`）。
+6. **静默判据错误**：原实现等待"会话对象离开内存"（`ctx.sessions.get(id) === undefined`）。实测 dsh 会把**查看过的会话**提升为常驻 Agent 并保留到进程结束，live 永不消失 → 删除打开中的会话必然 `busy` 超时。修正：`stop.ts` 只等活动清零（turn/jobs/subagent/schedule），并对**每个目标都归档**（归档集合是阻止后续唤醒的持久屏障）；安全依据：JSONL 后端已物化句柄 `flush()` 直接返回、`close()` 只排空非空缓冲（`storage.ts` 的 `drainBuffered`/`persistContiguous`），归档 + 活动清零后不会再有事件写入。同时移除不再使用的 `sessions` 依赖。
+7. **busy 诊断**：`busy` 消息带上每个未静默 id 的活动计数（`<id> (activity N)`），便于定位。

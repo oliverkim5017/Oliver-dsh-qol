@@ -45,7 +45,7 @@ async function harness(
   snapshots: readonly SessionPersistenceSnapshot[],
   options: {
     readonly failRemovalAt?: number
-    readonly live?: readonly string[]
+    readonly activity?: (sessionId: SessionId) => number
     readonly stubborn?: boolean
     readonly registryLate?: boolean
   } = {},
@@ -55,19 +55,23 @@ async function harness(
   for (const entry of snapshots) {
     await mkdir(join(root, '--C-work--', String(entry.header.id)), { recursive: true })
   }
-  const live = new Set<string>(options.live ?? [])
   const deleted: string[] = []
   const warnings: string[] = []
   const archived: string[] = []
   let removals = 0
   let now = 0
   let registryAvailable = options.registryLate !== true
+  const activity = new Map<string, number>()
+  for (const entry of snapshots) {
+    const count = options.activity?.(entry.header.id) ?? 0
+    if (count > 0) activity.set(String(entry.header.id), count)
+  }
   const workspaceRegistry = {
     archiveSession: async (sessionId: SessionId) => {
       archived.push(String(sessionId))
-      // The shipped stop path releases the session once its work is stopped;
-      // `stubborn` models a session that never settles.
-      if (options.stubborn !== true) live.delete(String(sessionId))
+      // The shipped stop path settles the session's work; `stubborn` models
+      // work that never settles.
+      if (options.stubborn !== true) activity.delete(String(sessionId))
     },
     list: () => [{
       detachSession: async (sessionId: SessionId) => { deleted.push(`detach:${String(sessionId)}`) },
@@ -77,7 +81,6 @@ async function harness(
   }
   const deps: SessionDeleteDeps = {
     sessionPersistence: { list: async () => snapshots },
-    sessions: { get: sessionId => (live.has(String(sessionId)) ? { id: sessionId } : undefined) },
     workspaceRegistry: () => (registryAvailable ? workspaceRegistry : undefined),
     storageDomain: () => ({
       get: () => ({
@@ -86,7 +89,7 @@ async function harness(
         }),
       }),
     }),
-    activityOf: async () => 0,
+    activityOf: async sessionId => activity.get(String(sessionId)) ?? 0,
     logger: { warn: message => { warnings.push(message) } },
     sleep: async (milliseconds) => { now += milliseconds },
     now: () => now,
@@ -159,14 +162,14 @@ describe('SessionDeleteService.delete', () => {
     const test = await harness([
       snapshot('root'),
       snapshot('child', { parent: 'root', origin: 'subagent' }),
-    ], { live: ['child'] })
+    ], { activity: sessionId => (String(sessionId) === 'child' ? 1 : 0) })
     const report = await test.service.delete(id('root'))
-    expect(test.archived).toEqual(['child'])
+    expect(test.archived).toEqual(['child', 'root'])
     expect(report.deleted.map(String)).toEqual(['child', 'root'])
   })
 
   it('leaves storage untouched when the stop times out', async () => {
-    const test = await harness([snapshot('root')], { live: ['root'], stubborn: true })
+    const test = await harness([snapshot('root')], { activity: () => 1, stubborn: true })
     await expect(test.service.delete(id('root')))
       .rejects.toMatchObject({ code: SESSION_DELETE_CODES.busy, deleted: [] })
     expect(test.archived).toEqual(['root'])
@@ -174,7 +177,7 @@ describe('SessionDeleteService.delete', () => {
   })
 
   it('reads optional services at call time', async () => {
-    const test = await harness([snapshot('root')], { live: ['root'], registryLate: true })
+    const test = await harness([snapshot('root')], { activity: () => 1, registryLate: true })
     await expect(test.service.delete(id('root')))
       .rejects.toMatchObject({ code: SESSION_DELETE_CODES.stopUnavailable })
 

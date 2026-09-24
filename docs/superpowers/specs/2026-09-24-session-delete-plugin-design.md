@@ -110,8 +110,8 @@ interface SessionDeleteService {
 **删除流水线（`delete`）**
 
 1. `sessionPersistence.list()` 取一次快照：目标必须存在，否则 `not-found`；BFS 收集 `origin === 'subagent' && parentSession ∈ 集合` 的递归子会话；fork（`origin === undefined`）不收集。
-2. 对每个"仍在运行"的 id（`sessions.get(id) !== undefined`，或 `workspace/session-activity` waterfall 报告非空活动）调用 `workspaceRegistry.archiveSession(id, { stopActivity: true })` 停止其工作并阻止唤醒；`workspaceRegistry` 缺失而会话仍运行时以 `stop-unavailable` 拒绝。
-3. 轮询等待全部 id 既不 live 也无活动报告；超时以 `busy` 拒绝（会话保持已归档，可从归档筛选重试）。当前打开的会话由 ui-workspace 的归档自动清空逻辑释放。
+2. 对每个 id 调用 `workspaceRegistry.archiveSession(id, { stopActivity: true })`——空闲会话也归档，因为归档集合是阻止后续唤醒的持久屏障；`workspaceRegistry` 缺失且该会话有活动时以 `stop-unavailable` 拒绝。
+3. 轮询等待全部 id 的**活动**清零（turn/jobs/subagent/schedule）；超时以 `busy` 拒绝（会话保持已归档，可从归档筛选重试）。**不等会话对象离开内存**：dsh 会把查看过的会话保留到进程结束（live 永不消失），而 JSONL 后端对已物化句柄的 `flush()`/`close()` 在无待写事件时不写盘——归档阻止唤醒 + 活动清零后删除文件是安全的。当前打开的会话由 ui-workspace 的归档清空逻辑自动切走。
 4. 物理删除（深→浅，先子后父）：定位 `<root>/<projectDir>/<encodeSegment(id)>` 目录并递归删除。`projectDir` 不重算 `projectKey`，而是扫描 `<root>` 下各项目目录、匹配 `encodeSegment(id)` 目录名。
 5. 删除投影缓存记录：`storageDomain.get('session_projcache')` → 表 `sessions` → `delete(id)`；domain 未打开或服务缺失则记日志跳过（自愈派生数据）。
 6. 记账清理：遍历 `workspaceRegistry.list()`，对每个 workspace 调 `detachSession(id)`；再 `unarchiveSession(id)`、`unpinSession(id)`。
@@ -238,7 +238,7 @@ D:\2Code\Oliver-dsh-qol\            # 仓库根 == 包根（单包）
 
 - **格式耦合**：目录布局与 `encodeSegment` 复刻绑定 `0.1.7-alpha.2`；dsh 升级需复核 `session-persistence-jsonl` 的 `format.ts` 与投影缓存 domain 版本。
 - **跨进程并发**：删除期间另一进程正在写同一会话时，Windows 因文件锁失败（映射 `busy`），POSIX 存在小概率竞态窗口；单机单 home 场景风险极低，README 明示。
-- **当前打开的会话**：依赖 ui-workspace 归档清空逻辑释放 retain；若客户端未及时释放，表现为 `busy` 超时，重试即可。
+- **当前打开的会话**：host 会先把目标归档并等待活动清零；ui-workspace 的归档清空逻辑自动切走视图，因此打开中的会话可直接删除（会话对象会留在宿主内存里直到进程结束，这不影响删除——见 5.2 第 3 步的写路径依据）。
 - **删除不可恢复**：确认框已是最后一道防线；不提供 undelete。
 - **API 不稳定**：dsh 全部 API 处于 pre-stable，插件版本与 dsh 版本强绑定。
 - **单包共享风险**：任何功能的注册失败都不应影响其他功能（每个功能在自己的 `ctx.inject` fiber 内注册；错误只影响该功能）。

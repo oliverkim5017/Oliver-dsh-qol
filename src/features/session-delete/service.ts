@@ -21,8 +21,6 @@ export interface SessionDeletionReport {
 export interface SessionDeleteDeps {
   /** Session persistence, read once per request. */
   readonly sessionPersistence: { list(): Promise<readonly SessionPersistenceSnapshot[]> }
-  /** Live session store; a defined value means the session is in memory. */
-  readonly sessions: { get(sessionId: SessionId): unknown }
   /**
    * Workspace registry, when the composition has one. Read at call time:
    * service fibers activate asynchronously, so an earlier read can miss a
@@ -87,7 +85,6 @@ export class SessionDeleteService {
     await stopSessionsForDeletion(
       {
         workspaceRegistry,
-        isLive: id => this.deps.sessions.get(id) !== undefined,
         activityOf: this.deps.activityOf,
         sleep: this.deps.sleep,
         now: this.deps.now,

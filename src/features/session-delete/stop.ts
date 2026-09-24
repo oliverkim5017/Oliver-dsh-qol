@@ -10,8 +10,6 @@ export interface SessionStopWorkspace {
 export interface SessionStopDeps {
   /** Archive-capable workspace registry; absent when the composition has none. */
   readonly workspaceRegistry: SessionStopWorkspace | undefined
-  /** Whether the session object is live in this process. */
-  readonly isLive: (sessionId: SessionId) => boolean
   /** How many activity entries the composed providers report for the session. */
   readonly activityOf: (sessionId: SessionId) => Promise<number>
   /** Wait one poll interval. */
@@ -27,14 +25,19 @@ export interface QuiescencePolicy {
 }
 
 /**
- * Stop every target's running work and wait until none is running.
+ * Stop every target's running work and wait until none reports activity.
+ *
  * Archiving with `stopActivity` is the shipped stop path: it durably blocks
- * wakes through the archive gate before the stop providers run.
+ * wakes through the archive gate before the stop providers run, so it is taken
+ * for every target — including idle ones — and nothing can append while the
+ * stored files are removed. A session's in-memory object may outlive the view
+ * (dsh keeps a viewed session's agent until the process ends), so activity,
+ * not liveness, is what this step waits on.
  * @param deps - host facts.
  * @param ids - every session the delete will remove.
  * @param policy - quiescence timing.
- * @throws {SessionDeleteError} `stop-unavailable` when a running session cannot
- * be stopped, `busy` when sessions do not settle within the timeout.
+ * @throws {SessionDeleteError} `stop-unavailable` when running work cannot be
+ * stopped, `busy` when activity does not settle within the timeout.
  */
 export async function stopSessionsForDeletion(
   deps: SessionStopDeps,
@@ -42,32 +45,31 @@ export async function stopSessionsForDeletion(
   policy: QuiescencePolicy,
 ): Promise<void> {
   for (const id of ids) {
-    if (!(await isRunning(deps, id))) continue
     if (deps.workspaceRegistry === undefined) {
-      throw new SessionDeleteError(
-        SESSION_DELETE_CODES.stopUnavailable,
-        `session ${String(id)} is running and no workspace registry can stop it`,
-      )
+      if ((await deps.activityOf(id)) > 0) {
+        throw new SessionDeleteError(
+          SESSION_DELETE_CODES.stopUnavailable,
+          `session ${String(id)} is running and no workspace registry can stop it`,
+        )
+      }
+      continue
     }
     await deps.workspaceRegistry.archiveSession(id, { stopActivity: true })
   }
   const deadline = deps.now() + policy.timeoutMs
   for (;;) {
-    const running: SessionId[] = []
+    const running: string[] = []
     for (const id of ids) {
-      if (await isRunning(deps, id)) running.push(id)
+      const activity = await deps.activityOf(id)
+      if (activity > 0) running.push(`${String(id)} (activity ${activity})`)
     }
     if (running.length === 0) return
     if (deps.now() >= deadline) {
       throw new SessionDeleteError(
         SESSION_DELETE_CODES.busy,
-        `sessions still running: ${running.map(String).join(', ')}`,
+        `sessions still running: ${running.join(', ')}`,
       )
     }
     await deps.sleep(policy.pollMs)
   }
-}
-
-async function isRunning(deps: SessionStopDeps, id: SessionId): Promise<boolean> {
-  return deps.isLive(id) || (await deps.activityOf(id)) > 0
 }

@@ -12,10 +12,9 @@ export const sessionDeleteFeature: HostFeature = {
   name: 'sessionDelete',
   register(ctx: Context, root): void {
     const config = resolveSessionDeleteConfig(root.sessionDelete)
-    ctx.inject(['sessionPersistence', 'sessions'], (featureCtx) => {
+    ctx.inject(['sessionPersistence'], (featureCtx) => {
       const deps: SessionDeleteDeps = {
         sessionPersistence: featureCtx.sessionPersistence,
-        sessions: featureCtx.sessions,
         // Optional services are read per call: their fibers activate
         // asynchronously, so a read at feature activation can miss them.
         workspaceRegistry: () => featureCtx.get('workspaceRegistry'),
