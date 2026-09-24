@@ -57,20 +57,18 @@ DeepSeek Harness（dsh）目前没有任何删除会话的能力：`SessionPersi
 - `cordis.patch.yml` 只插入一行：`{ id: oliver-qol, name: dsh-oliver-qol }`。
 - 命名空间约定：插件行 id `oliver-qol`；HTTP 路由前缀 `/api/oliver-qol/`；locale namespace 按功能分配（本功能 `oliver-qol.session-delete`）；host 能力键按功能分配（本功能 `sessionDelete`）。
 
-**功能契约（最小约定，非框架）**：每个功能导出一个注册对象；根入口遍历功能清单逐个注册。功能自己负责从根配置取出子配置，避免异质清单的类型体操与 `unknown` 转换。
+**功能契约（最小约定，非框架）**：每个功能导出一个注册对象；根入口遍历功能清单逐个注册。功能自己从根配置取出子配置，清单因此是同质数组，无类型体操与 `unknown` 转换。
 
 ```ts
 // src/features/index.ts — host 功能清单
 export const HOST_FEATURES = [sessionDeleteFeature] as const
 
 // 每个功能形如：
-export interface HostFeature<C> {
+export interface HostFeature {
   /** 功能名，同时是根 Config 中的子配置键。 */
-  readonly name: string
-  /** 从根配置取出本功能的子配置（缺失时使用该功能自己的默认值）。 */
-  selectConfig(root: QolConfig): C
+  readonly name: keyof QolConfig
   /** 自包含注册：内部完成 ctx.inject / 服务提供 / 路由注册 / effect 绑定。 */
-  register(ctx: Context, config: C): void
+  register(ctx: Context, config: QolConfig): void
 }
 ```
 
@@ -112,8 +110,8 @@ interface SessionDeleteService {
 **删除流水线（`delete`）**
 
 1. `sessionPersistence.list()` 取一次快照：目标必须存在，否则 `not-found`；BFS 收集 `origin === 'subagent' && parentSession ∈ 集合` 的递归子会话；fork（`origin === undefined`）不收集。
-2. 对每个活动 id（`sessions.get(id) !== undefined`）调用 `workspaceRegistry.archiveSession(id, { stopActivity: true })` 停止其工作并阻止唤醒；`workspaceRegistry` 缺失且会话活动时以 `stop-unavailable` 拒绝。
-3. 轮询 `sessions.get(id) === undefined` 等待全部静默；超时以 `busy` 拒绝（会话保持已归档，可从归档筛选重试）。当前打开的会话由 ui-workspace 的归档自动清空逻辑释放。
+2. 对每个"仍在运行"的 id（`sessions.get(id) !== undefined`，或 `workspace/session-activity` waterfall 报告非空活动）调用 `workspaceRegistry.archiveSession(id, { stopActivity: true })` 停止其工作并阻止唤醒；`workspaceRegistry` 缺失而会话仍运行时以 `stop-unavailable` 拒绝。
+3. 轮询等待全部 id 既不 live 也无活动报告；超时以 `busy` 拒绝（会话保持已归档，可从归档筛选重试）。当前打开的会话由 ui-workspace 的归档自动清空逻辑释放。
 4. 物理删除（深→浅，先子后父）：定位 `<root>/<projectDir>/<encodeSegment(id)>` 目录并递归删除。`projectDir` 不重算 `projectKey`，而是扫描 `<root>` 下各项目目录、匹配 `encodeSegment(id)` 目录名。
 5. 删除投影缓存记录：`storageDomain.get('session_projcache')` → 表 `sessions` → `delete(id)`；domain 未打开或服务缺失则记日志跳过（自愈派生数据）。
 6. 记账清理：遍历 `workspaceRegistry.list()`，对每个 workspace 调 `detachSession(id)`；再 `unarchiveSession(id)`、`unpinSession(id)`。
@@ -129,10 +127,12 @@ interface SessionDeleteService {
 
 | code | HTTP | 场景 |
 |---|---|---|
+| `session-delete/bad-request` | 400 | 请求体不是 JSON 或 `sessionId` 缺失/为空 |
 | `session-delete/not-found` | 404 | 会话不存在（既不 live 也无持久化记录） |
 | `session-delete/busy` | 409 | 静默超时，或文件被其他进程占用（Windows 锁） |
 | `session-delete/stop-unavailable` | 409 | 会话活动但 `workspaceRegistry` 缺失，无法安全停止 |
 | `session-delete/io-failed` | 500 | 其他文件系统错误 |
+| `session-delete/internal` | 500 | 未预期失败（不回显内部细节） |
 
 **耦合隔离**：磁盘布局假设（两层目录 + `encodeSegment` 复刻）只存在于 `jsonl-layout.ts` 与 `removal.ts`；其余模块只依赖 dsh 公开服务。
 
@@ -152,7 +152,7 @@ interface SessionDeleteService {
 4. 成功 → 关闭对话框 → `ctx.get('sessions')?.refresh()`，侧边栏该行消失。
 5. 失败 → 对话框内联显示 `code: message`（本地化映射，未知码原样显示），可重试或取消；会话此时仅保持归档状态。
 
-**client 结构**：不使用 CSS Modules，只复用 `@deepseek-ai/dsh-client-ui-primitives` 的组件与图标。
+**client 结构**：不使用 CSS Modules，只复用 `@deepseek-ai/dsh-client-ui-primitives` 的组件与图标。client 侧类型采用本地结构化接口（`ClientServices`：slots/locale/可选 sessions），不引入 ui-workspace 的整套 client 类型图，保持与宿主版本的松耦合；入口处对可选服务做运行时守卫。
 
 ## 6. 仓库结构
 
@@ -213,13 +213,17 @@ D:\2Code\Oliver-dsh-qol\            # 仓库根 == 包根（单包）
 
 - **单元（vitest）**
   - `jsonl-layout`：`encodeSegment` 向量；目录定位扫描（临时目录）。
-  - `plan`：subagent 链级联、fork 排除、目标缺失。
-  - `service`：全流水线编排（fake persistence / sessions / workspaceRegistry / storageDomain + 临时目录真 fs）；验证顺序、停止调用、清理调用、错误传播与 `deleted` 报告。
-  - `stop`：静默等待成功/超时；`workspaceRegistry` 缺失时活动会话拒绝。
+  - `plan`：subagent 链级联、fork 排除、目标缺失、环防护。
+  - `service`：全流水线编排（fake persistence / sessions / workspaceRegistry / storageDomain + 临时目录真 fs）；验证顺序、停止调用、清理调用、部分失败时的 `deleted` 报告与残留清理。
+  - `stop`：活动判定（live 或 activity waterfall）、静默等待成功/超时；`workspaceRegistry` 缺失时活动会话拒绝。
   - `route`：请求校验（缺 body、坏 JSON、空 sessionId）、成功/错误响应与 HTTP 状态映射（对注册到的 fetch 函数直接发 `Request`）。
+  - `errors`：每个错误码都有 HTTP 映射。
   - `client/delete-client`：fake fetcher 的成功/错误/网络异常解析。
-  - 根入口：`apply` 遍历清单注册全部功能（fake ctx 断言调用）。
-- **验证（不需要重启用户 dsh 的部分，先做）**：`pnpm build` 产物存在且可被 Node 导入；`dsh --profile web --dump-config` 使用临时 overlay/独立 profile 确认行合成（不触碰用户运行中的实例）。
+  - `client/descendant-count` 与 `client/error-text`：纯函数统计与错误码文案映射。
+  - client bundle 冒烟：用 esbuild 以构建脚本同样的配置打包到临时文件，在 Node 中以桩 `window.__ModuleLoader__` 与桩 `require` 载入，断言导出 `inject`/`apply` 且 `apply` 能向桩 slots/locale 注册。
+  - 根入口集成：fake ctx（inject/get/provide/effect/logger/waterfall）跑 `apply`，断言服务被 provide、路由被注册，并经路由处理器完成一次端到端删除（fake 持久化/会话/workspace/storageDomain）。
+- **组件测试范围**：client 组件是框架 slot 机制上的薄展示层，不做 jsdom 组件测试；可测逻辑已抽成纯模块（上述），UI 行为由 M5 人工验收覆盖。
+- **验证（不重启用户 dsh）**：`pnpm build` 产物可被 Node 导入并导出 `name`/`apply`/`Config`；`cordis.patch.yml` 结构测试（恰好一行 insert，id/name 正确）。**不在用户的 DSH_HOME 上启动任何 dsh 进程**（profile 的 `cordis.yml` 每次 boot 会被重写，可能触发用户实例的 HMR），真实合成验证推迟到 M5。
 - **需重启的验收（推迟到用户放行）**：安装到本地 profile 后走 UI：删除普通会话、含 subagent 子会话的会话、当前打开的会话、归档中的会话；核对 `$DSH_HOME/sessions`、`storages/session_projcache`、workspace 记账均已清理。
 
 ## 9. 里程碑
