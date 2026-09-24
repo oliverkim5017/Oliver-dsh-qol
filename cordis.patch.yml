@@ -1,0 +1,5 @@
+# dsh-oliver-qol bundle patch: mounts the plugin's host half. The browser half
+# ships through exports["./client"] and the dsh.client declaration in package.json.
+- insert:
+    - id: oliver-qol
+      name: dsh-oliver-qol

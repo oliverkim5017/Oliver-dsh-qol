@@ -1,0 +1,4 @@
+# pnpm 11 records install-script approval here; esbuild's postinstall links its
+# platform binary. Single-package repository: no workspace members.
+allowBuilds:
+  esbuild: true
