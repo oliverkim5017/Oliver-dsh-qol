@@ -2774,3 +2774,12 @@ git commit -m "docs: document install, development, and acceptance for dsh-olive
 ## M5（等用户放行，不在本计划内执行）
 
 用户确认可以重启 dsh 后：`dsh plugin --profile web add link:D:\2Code\Oliver-dsh-qol` → `dsh.cmd --profile web --dump-config` 确认行合成 → 重启 `dsh-web.cmd` → 走 UI 完成 README 的人工验收清单 → 清理测试数据。
+
+---
+
+## 实施偏差记录（2026-09-24 执行时）
+
+1. **pnpm 11 构建许可**：新增 `pnpm-workspace.yaml`（`allowBuilds: esbuild: true`）。pnpm 11 不再读取 package.json 的 `pnpm` 字段，且不批准 esbuild 的 postinstall 会让隐式安装检查以 `ERR_PNPM_IGNORED_BUILDS` 失败。
+2. **Config 显式 resolve**：`SessionDeleteConfig` 改为全可选输入类型，新增 `ResolvedSessionDeleteConfig` 与 `resolveSessionDeleteConfig()`。原因：schemastery 的 schema 调用签名要求已解析值，且 dsh 约定"defaulting 是显式的 resolve 步骤"。
+3. **构建编排**：`pnpm build` 改为 `node scripts/build.mjs`（先清空 `lib/`，再 tsc host + esbuild client）；`tsconfig.build.json` 排除 `src/client/**/*` 与 `src/features/*/client/**/*`。原因：tsc 会因 host 文件被 client 文件间接引用而把 client 模块编译进 `lib/`，并可能把陈旧产物带进 npm 包。验证：`pnpm pack` 的 tarball 只含 host 产物、`lib/client.js`、`cordis.patch.yml`、README、package.json。
+4. **descendant-count 语义**：目标自身不计入子会话数（visited 集合预置 target，计数单独累加），环数据下不重复计数。
