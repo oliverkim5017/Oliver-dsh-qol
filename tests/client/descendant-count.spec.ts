@@ -5,10 +5,10 @@ describe('countSubagentDescendants', () => {
   it('counts a subagent chain and ignores forks', () => {
     const summaries = {
       root: {},
-      fork: { parentSessionId: 'root' },
-      child: { parentSessionId: 'root', origin: 'subagent' as const },
-      grandchild: { parentSessionId: 'child', origin: 'subagent' as const },
-      unrelated: { parentSessionId: 'other', origin: 'subagent' as const },
+      fork: { parentId: 'root' },
+      child: { parentId: 'root', origin: 'subagent' as const },
+      grandchild: { parentId: 'child', origin: 'subagent' as const },
+      unrelated: { parentId: 'other', origin: 'subagent' as const },
     }
     expect(countSubagentDescendants(summaries, 'root')).toBe(2)
   })
@@ -19,8 +19,8 @@ describe('countSubagentDescendants', () => {
 
   it('survives a parent cycle', () => {
     const summaries = {
-      a: { parentSessionId: 'b', origin: 'subagent' as const },
-      b: { parentSessionId: 'a', origin: 'subagent' as const },
+      a: { parentId: 'b', origin: 'subagent' as const },
+      b: { parentId: 'a', origin: 'subagent' as const },
     }
     expect(countSubagentDescendants(summaries, 'a')).toBe(1)
   })

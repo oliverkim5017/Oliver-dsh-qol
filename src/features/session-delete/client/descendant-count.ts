@@ -1,6 +1,7 @@
 /** The Session fields the descendant count reads from the client session list. */
 export interface ClientSessionSummary {
-  readonly parentSessionId?: string
+  /** Direct parent the client summary records for lineage (fork or subagent). */
+  readonly parentId?: string
   readonly origin?: 'subagent'
 }
 
@@ -18,9 +19,9 @@ export function countSubagentDescendants(
   const children = new Map<string, string[]>()
   for (const [id, summary] of Object.entries(summaries)) {
     if (summary === undefined || summary.origin !== 'subagent') continue
-    if (summary.parentSessionId === undefined) continue
-    const siblings = children.get(summary.parentSessionId)
-    if (siblings === undefined) children.set(summary.parentSessionId, [id])
+    if (summary.parentId === undefined) continue
+    const siblings = children.get(summary.parentId)
+    if (siblings === undefined) children.set(summary.parentId, [id])
     else siblings.push(id)
   }
   const visited = new Set<string>([target])
