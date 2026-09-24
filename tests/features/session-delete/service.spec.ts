@@ -35,6 +35,8 @@ interface Harness {
   readonly warnings: string[]
   readonly archived: string[]
   readonly root: string
+  /** Make the workspace registry visible to later calls (activation-order model). */
+  provideRegistry(): void
 }
 
 const roots: string[] = []
@@ -45,6 +47,7 @@ async function harness(
     readonly failRemovalAt?: number
     readonly live?: readonly string[]
     readonly stubborn?: boolean
+    readonly registryLate?: boolean
   } = {},
 ): Promise<Harness> {
   const root = await mkdtemp(join(tmpdir(), 'oliver-qol-'))
@@ -58,29 +61,31 @@ async function harness(
   const archived: string[] = []
   let removals = 0
   let now = 0
+  let registryAvailable = options.registryLate !== true
+  const workspaceRegistry = {
+    archiveSession: async (sessionId: SessionId) => {
+      archived.push(String(sessionId))
+      // The shipped stop path releases the session once its work is stopped;
+      // `stubborn` models a session that never settles.
+      if (options.stubborn !== true) live.delete(String(sessionId))
+    },
+    list: () => [{
+      detachSession: async (sessionId: SessionId) => { deleted.push(`detach:${String(sessionId)}`) },
+    }],
+    unarchiveSession: async (sessionId: SessionId) => { deleted.push(`unarchive:${String(sessionId)}`) },
+    unpinSession: async (sessionId: SessionId) => { deleted.push(`unpin:${String(sessionId)}`) },
+  }
   const deps: SessionDeleteDeps = {
     sessionPersistence: { list: async () => snapshots },
     sessions: { get: sessionId => (live.has(String(sessionId)) ? { id: sessionId } : undefined) },
-    workspaceRegistry: {
-      archiveSession: async (sessionId) => {
-        archived.push(String(sessionId))
-        // The shipped stop path releases the session once its work is stopped;
-        // `stubborn` models a session that never settles.
-        if (options.stubborn !== true) live.delete(String(sessionId))
-      },
-      list: () => [{
-        detachSession: async sessionId => { deleted.push(`detach:${String(sessionId)}`) },
-      }],
-      unarchiveSession: async sessionId => { deleted.push(`unarchive:${String(sessionId)}`) },
-      unpinSession: async sessionId => { deleted.push(`unpin:${String(sessionId)}`) },
-    },
-    storageDomain: {
+    workspaceRegistry: () => (registryAvailable ? workspaceRegistry : undefined),
+    storageDomain: () => ({
       get: () => ({
         table: () => ({
           delete: async (key: SessionId) => { deleted.push(`cache:${String(key)}`); return true },
         }),
       }),
-    },
+    }),
     activityOf: async () => 0,
     logger: { warn: message => { warnings.push(message) } },
     sleep: async (milliseconds) => { now += milliseconds },
@@ -97,6 +102,7 @@ async function harness(
       sessionsRoot: root, quiescenceTimeoutMs: 100, quiescencePollMs: 1,
     }),
     deleted, warnings, archived, root,
+    provideRegistry: () => { registryAvailable = true },
   }
 }
 
@@ -165,5 +171,17 @@ describe('SessionDeleteService.delete', () => {
       .rejects.toMatchObject({ code: SESSION_DELETE_CODES.busy, deleted: [] })
     expect(test.archived).toEqual(['root'])
     expect(await findSessionDirs(test.root, id('root'))).not.toEqual([])
+  })
+
+  it('reads optional services at call time', async () => {
+    const test = await harness([snapshot('root')], { live: ['root'], registryLate: true })
+    await expect(test.service.delete(id('root')))
+      .rejects.toMatchObject({ code: SESSION_DELETE_CODES.stopUnavailable })
+
+    test.provideRegistry()
+    const report = await test.service.delete(id('root'))
+    expect(test.archived).toEqual(['root'])
+    expect(report.deleted.map(String)).toEqual(['root'])
+    expect(test.deleted).toContain('detach:root')
   })
 })

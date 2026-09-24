@@ -16,8 +16,10 @@ export const sessionDeleteFeature: HostFeature = {
       const deps: SessionDeleteDeps = {
         sessionPersistence: featureCtx.sessionPersistence,
         sessions: featureCtx.sessions,
-        workspaceRegistry: featureCtx.get('workspaceRegistry'),
-        storageDomain: featureCtx.get('storageDomain'),
+        // Optional services are read per call: their fibers activate
+        // asynchronously, so a read at feature activation can miss them.
+        workspaceRegistry: () => featureCtx.get('workspaceRegistry'),
+        storageDomain: () => featureCtx.get('storageDomain'),
         activityOf: async (sessionId) => {
           const activity = await featureCtx.waterfall(
             'workspace/session-activity',
@@ -36,7 +38,11 @@ export const sessionDeleteFeature: HostFeature = {
       }
       const service = new SessionDeleteService(deps, config)
       featureCtx.provide('sessionDelete', service)
-      registerSessionDeleteRoute(featureCtx, service)
+      // The Web route waits for the connection service instead of sampling it:
+      // a headless composition never provides one and simply stays without a route.
+      featureCtx.inject(['connection'], (routeCtx) => {
+        registerSessionDeleteRoute(routeCtx, service)
+      })
     })
   },
 }

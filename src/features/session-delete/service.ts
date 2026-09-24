@@ -23,10 +23,14 @@ export interface SessionDeleteDeps {
   readonly sessionPersistence: { list(): Promise<readonly SessionPersistenceSnapshot[]> }
   /** Live session store; a defined value means the session is in memory. */
   readonly sessions: { get(sessionId: SessionId): unknown }
-  /** Workspace registry, when the composition has one. */
-  readonly workspaceRegistry: (SessionStopWorkspace & WorkspaceAccounting) | undefined
-  /** Storage hub's domain facility, when present (projection-cache cleanup). */
-  readonly storageDomain: unknown
+  /**
+   * Workspace registry, when the composition has one. Read at call time:
+   * service fibers activate asynchronously, so an earlier read can miss a
+   * provider that is still loading.
+   */
+  readonly workspaceRegistry: () => (SessionStopWorkspace & WorkspaceAccounting) | undefined
+  /** Storage hub's domain facility at call time, when present (projection-cache cleanup). */
+  readonly storageDomain: () => unknown
   /** Activity count reported by the composed providers for one session. */
   readonly activityOf: (sessionId: SessionId) => Promise<number>
   /** Diagnostics sink. */
@@ -70,6 +74,7 @@ export class SessionDeleteService {
    * @throws {SessionDeleteError} with the ids removed before a failure.
    */
   async delete(sessionId: SessionId): Promise<SessionDeletionReport> {
+    const workspaceRegistry = this.deps.workspaceRegistry()
     const snapshots = await this.deps.sessionPersistence.list()
     const candidates: readonly SessionDeletionCandidate[] = snapshots.map(snapshot => ({
       id: snapshot.header.id,
@@ -81,7 +86,7 @@ export class SessionDeleteService {
     const plan = planSessionDeletion(candidates, sessionId)
     await stopSessionsForDeletion(
       {
-        workspaceRegistry: this.deps.workspaceRegistry,
+        workspaceRegistry,
         isLive: id => this.deps.sessions.get(id) !== undefined,
         activityOf: this.deps.activityOf,
         sleep: this.deps.sleep,
@@ -113,9 +118,9 @@ export class SessionDeleteService {
     }
 
     for (const id of deleted) {
-      await deleteProjectionCacheRecord(this.deps.storageDomain, id, this.deps.logger.warn)
+      await deleteProjectionCacheRecord(this.deps.storageDomain(), id, this.deps.logger.warn)
     }
-    await clearWorkspaceAccounting(this.deps.workspaceRegistry, deleted, this.deps.logger.warn)
+    await clearWorkspaceAccounting(workspaceRegistry, deleted, this.deps.logger.warn)
 
     if (failure !== undefined) throw failure
     return { deleted }

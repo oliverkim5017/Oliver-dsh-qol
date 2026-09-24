@@ -67,11 +67,33 @@ describe('plugin entry', () => {
 
   it('mounts without a web connection', async () => {
     const root = await tempRoot()
-    const ctx = createFakeHostContext({ snapshots: [], connection: false })
+    const ctx = createFakeHostContext({ snapshots: [], connection: 'absent' })
     apply(ctx as unknown as Context, {
       sessionDelete: { sessionsRoot: root, quiescenceTimeoutMs: 50, quiescencePollMs: 1 },
     })
     expect(ctx.provided.get('sessionDelete')).toBeDefined()
     expect(ctx.routes).toEqual([])
+  })
+
+  it('registers the route when the connection activates after the feature', async () => {
+    const root = await tempRoot()
+    await mkdir(join(root, '--C-work--', 'root'), { recursive: true })
+    const ctx = createFakeHostContext({ snapshots: [snapshot('root')], connection: 'pending' })
+    apply(ctx as unknown as Context, {
+      sessionDelete: { sessionsRoot: root, quiescenceTimeoutMs: 50, quiescencePollMs: 1 },
+    })
+    expect(ctx.routes).toEqual([])
+
+    ctx.activateConnection()
+    expect(ctx.routes.map(route => route.path)).toEqual([SESSION_DELETE_ROUTE_PATH])
+
+    const route = ctx.routes[0]
+    if (route === undefined) throw new Error('route was not registered')
+    const response = await route.fetch(new Request(`http://localhost${SESSION_DELETE_ROUTE_PATH}`, {
+      method: 'POST',
+      body: JSON.stringify({ sessionId: 'root' }),
+    }))
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ deleted: ['root'] })
   })
 })
