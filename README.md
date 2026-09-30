@@ -19,10 +19,10 @@ The plugin is a dsh bundle: its `package.json` declares `dsh.bundle` (host half)
 
 ```bat
 :: from GitHub (needs a built artifact; pnpm runs `prepare`)
-dsh plugin --profile web add github:OliverKim/dsh-oliver-qol
+dsh plugin --profile web add github:oliverkim5017/dsh-oliver-qol
 
 :: from a local checkout (development loop)
-dsh plugin --profile web add link:D:\2Code\Oliver-dsh-qol
+dsh plugin --profile web add link:D:\2Code\dsh-oliver-qol
 ```
 
 Git installs run this package's `prepare` script, so the profile's `pnpm-workspace.yaml` must allow it:
